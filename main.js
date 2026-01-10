@@ -7136,6 +7136,7 @@ var TerminalView = class extends import_obsidian.ItemView {
     const remoteServer = this.plugin.settings?.remoteServer;
     if (remoteServer) {
       this.remoteMode = true;
+      this.remoteSettings = this.plugin.settings; // Save for error messages
       this.startWebSocket(remoteServer, cols, rows);
       return;
     }
@@ -7330,7 +7331,22 @@ var TerminalView = class extends import_obsidian.ItemView {
       this.ws.onclose = () => {
         this.ws = null;
         this.connectionLost = true;
-        this.term?.writeln("\r\n\x1b[33m[Connection lost - tap or press any key to reconnect]\x1b[0m");
+
+        // Show helpful error message based on mode
+        const mode = this.remoteSettings?.remoteMode || 'lan';
+        if (mode === 'tailscale') {
+          this.term?.writeln("\r\n\x1b[33m[Connection failed - Tailscale mode]\x1b[0m");
+          this.term?.writeln("\x1b[90mMake sure:\x1b[0m");
+          this.term?.writeln("\x1b[90m  1. Tailscale is connected on this device\x1b[0m");
+          this.term?.writeln("\x1b[90m  2. Server is running on your Mac (check Settings)\x1b[0m");
+          this.term?.writeln("\x1b[90m  Or switch to LAN mode in Settings\x1b[0m");
+        } else {
+          this.term?.writeln("\r\n\x1b[33m[Connection failed - LAN mode]\x1b[0m");
+          this.term?.writeln("\x1b[90mMake sure:\x1b[0m");
+          this.term?.writeln("\x1b[90m  1. You're on the same WiFi as your Mac\x1b[0m");
+          this.term?.writeln("\x1b[90m  2. Server is running (check Settings on desktop)\x1b[0m");
+        }
+        this.term?.writeln("\r\n\x1b[33m[Press any key to retry]\x1b[0m");
       };
 
       this.ws.onerror = (error) => {
@@ -7398,12 +7414,13 @@ var TerminalView = class extends import_obsidian.ItemView {
 };
 var DEFAULT_SETTINGS = {
   remoteServer: "",
-  vaultPath: "",         // Full path to vault, set by desktop, used by mobile
-  authToken: "",         // Auth token for LAN mode (synced via Obsidian Sync)
-  enableRemoteAccess: false,  // Whether to run the relay server
-  remoteMode: "lan",     // "lan" or "tailscale"
-  trustedNetwork: "",    // SSID of trusted WiFi network for LAN mode
-  autoStartServer: true  // Auto-start server on Obsidian launch
+  vaultPath: "",             // Full path to vault, set by desktop, used by mobile
+  authToken: "",             // Auth token for LAN mode (synced via Obsidian Sync)
+  enableRemoteAccess: false, // Whether to run the relay server
+  remoteMode: "lan",         // "lan" or "tailscale"
+  trustedNetworkName: "Home",// User-friendly name for trusted network
+  trustedNetworkIP: "",      // IP prefix to identify trusted network (e.g., "192.168.1")
+  autoStartServer: true      // Auto-start server on Obsidian launch
 };
 
 // Server management utilities (desktop only)
@@ -7413,22 +7430,6 @@ var ServerManager = {
   // Check if we're on desktop (can run server)
   isDesktop() {
     return require !== undefined && typeof require('child_process') !== 'undefined';
-  },
-
-  // Get current WiFi SSID (macOS)
-  async getSSID() {
-    if (!this.isDesktop()) return null;
-    try {
-      const { execSync } = require('child_process');
-      const output = execSync(
-        "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I | awk '/ SSID/ {print substr($0, index($0, $2))}'",
-        { encoding: 'utf8' }
-      );
-      return output.trim() || null;
-    } catch (e) {
-      console.error('Failed to get SSID:', e);
-      return null;
-    }
   },
 
   // Get local IP address
@@ -7471,20 +7472,40 @@ var ServerManager = {
     return token;
   },
 
-  // Get path to relay server script
-  getServerPath() {
-    const path = require('path');
-    const os = require('os');
-    return path.join(os.homedir(), '.claude-anywhere', 'relay_server.py');
-  },
-
   // Start the relay server
-  async start(settings) {
-    if (!this.isDesktop() || this.process) return { success: false, error: 'Already running or not desktop' };
+  async start(settings, pluginDir) {
+    if (!this.isDesktop()) return { success: false, error: 'Not desktop' };
 
     try {
-      const { spawn } = require('child_process');
-      const args = [this.getServerPath()];
+      const { spawn, execSync } = require('child_process');
+      const path = require('path');
+
+      // Kill any existing process on port 8765
+      try {
+        execSync('lsof -ti:8765 | xargs kill -9 2>/dev/null', { encoding: 'utf8' });
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (e) {
+        // Ignore - no process to kill
+      }
+
+      // Get PATH from user's login shell (GUI apps don't inherit shell config)
+      let shellEnv = { ...process.env, TERM: 'xterm-256color', CLAUDE_ANYWHERE_TOKEN: settings.authToken };
+      try {
+        const shell = process.env.SHELL || '/bin/zsh';
+        const shellOutput = execSync(
+          `${shell} -lic 'echo "__PATH__"; echo "$PATH"'`,
+          { encoding: 'utf8', timeout: 2000 }
+        );
+        const shellPath = shellOutput.split('__PATH__\n')[1]?.trim().split('\n')[0];
+        if (shellPath) {
+          shellEnv.PATH = shellPath;
+        }
+      } catch (e) {
+        // Fall back to process.env.PATH if shell init fails
+      }
+
+      const serverPath = path.join(pluginDir, 'relay_server.py');
+      const args = [serverPath];
 
       if (settings.remoteMode === 'tailscale') {
         args.push('--tailscale');
@@ -7493,7 +7514,15 @@ var ServerManager = {
       this.process = spawn('python3', args, {
         detached: false,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, CLAUDE_ANYWHERE_TOKEN: settings.authToken }
+        env: shellEnv
+      });
+
+      this.process.stderr.on('data', (data) => {
+        console.log('Server stderr:', data.toString());
+      });
+
+      this.process.stdout.on('data', (data) => {
+        console.log('Server stdout:', data.toString());
       });
 
       this.process.on('error', (err) => {
@@ -7507,8 +7536,9 @@ var ServerManager = {
       });
 
       // Give it a moment to start
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
+      console.log('Server start result, process exists:', this.process !== null);
       return { success: this.process !== null };
     } catch (e) {
       console.error('Failed to start server:', e);
@@ -7617,95 +7647,127 @@ var ClaudeAnywhereSettingTab = class extends import_obsidian.PluginSettingTab {
               })
           );
 
-        // Trusted Network (LAN mode only)
-        if (this.plugin.settings.remoteMode === 'lan') {
-          const currentSSID = await ServerManager.getSSID();
-          const trustedSSID = this.plugin.settings.trustedNetwork;
-          const isOnTrusted = currentSSID && currentSSID === trustedSSID;
-
-          const networkSetting = new import_obsidian.Setting(containerEl)
-            .setName("Trusted Network");
-
-          if (trustedSSID) {
-            networkSetting.setDesc(
-              isOnTrusted
-                ? `"${trustedSSID}" (currently connected)`
-                : `"${trustedSSID}" (not connected - current: ${currentSSID || 'Unknown'})`
-            );
-            networkSetting.addButton((btn) =>
-              btn.setButtonText("Clear").onClick(async () => {
-                this.plugin.settings.trustedNetwork = "";
-                await this.plugin.saveSettings();
-                this.display();
-              })
-            );
-          } else {
-            networkSetting.setDesc(
-              currentSSID
-                ? `No trusted network set. Currently on "${currentSSID}".`
-                : "No trusted network set. Connect to WiFi first."
-            );
-          }
-
-          if (currentSSID && currentSSID !== trustedSSID) {
-            networkSetting.addButton((btn) =>
-              btn.setButtonText(`Trust "${currentSSID}"`).onClick(async () => {
-                this.plugin.settings.trustedNetwork = currentSSID;
-                await this.plugin.saveSettings();
-                this.display();
-              })
-            );
-          }
-        }
-
-        // Server status
+        // Network status
         const isRunning = ServerManager.isRunning();
-        const statusSetting = new import_obsidian.Setting(containerEl)
-          .setName("Server Status")
-          .setDesc(isRunning
-            ? `Running on ${this.plugin.settings.remoteServer}`
-            : "Stopped");
+        const currentIP = await ServerManager.getLocalIP();
 
-        if (isRunning) {
-          statusSetting.addButton((btn) =>
-            btn.setButtonText("Stop").onClick(() => {
-              ServerManager.stop();
-              this.display();
-            })
-          );
+        if (this.plugin.settings.remoteMode === 'lan') {
+          // LAN mode: show trusted network card
+          const hasTrustedNetwork = this.plugin.settings.trustedNetworkName && this.plugin.settings.trustedNetworkIP;
+
+          if (hasTrustedNetwork) {
+            // Show the trusted network card
+            const networkName = this.plugin.settings.trustedNetworkName;
+            const savedIP = this.plugin.settings.trustedNetworkIP;
+            const isCurrentNetwork = currentIP && currentIP.startsWith(savedIP.split('.').slice(0,3).join('.'));
+
+            const statusWord = isRunning ? "Running" : "Stopped";
+            const statusText = isCurrentNetwork
+              ? `${statusWord} on ${currentIP}:8765`
+              : `Not on this network`;
+
+            const networkSetting = new import_obsidian.Setting(containerEl)
+              .setName(networkName)
+              .setDesc(statusText)
+              .addExtraButton((btn) =>
+                btn.setIcon("x").setTooltip("Remove trusted network").onClick(async () => {
+                  ServerManager.stop();
+                  this.plugin.settings.trustedNetworkName = "";
+                  this.plugin.settings.trustedNetworkIP = "";
+                  this.plugin.settings.remoteServer = "";
+                  await this.plugin.saveSettings();
+                  this.display();
+                })
+              );
+
+            if (isRunning) {
+              networkSetting.addButton((btn) =>
+                btn.setButtonText("Stop").onClick(() => {
+                  ServerManager.stop();
+                  this.display();
+                })
+              );
+            } else if (isCurrentNetwork) {
+              networkSetting.addButton((btn) =>
+                btn.setButtonText("Start").onClick(async () => {
+                  await this.plugin.startServer();
+                  this.display();
+                })
+              );
+            }
+          } else {
+            // No trusted network - show "Add" button
+            new import_obsidian.Setting(containerEl)
+              .setName("No trusted network")
+              .setDesc(currentIP ? `Current IP: ${currentIP}` : "Not connected to WiFi")
+              .addButton((btn) =>
+                btn
+                  .setButtonText("+ Trust this network")
+                  .setCta()
+                  .onClick(async () => {
+                    if (currentIP) {
+                      this.plugin.settings.trustedNetworkName = "Home";
+                      this.plugin.settings.trustedNetworkIP = currentIP;
+                      await this.plugin.saveSettings();
+                      await this.plugin.startServer();
+                      this.display();
+                    }
+                  })
+              );
+          }
         } else {
-          statusSetting.addButton((btn) =>
-            btn.setButtonText("Start").onClick(async () => {
-              await this.plugin.startServer();
-              this.display();
-            })
-          );
+          // Tailscale mode: simpler display
+          const tailscaleIP = await ServerManager.getTailscaleIP();
+          const statusDesc = isRunning
+            ? `${tailscaleIP}:8765 • Running`
+            : tailscaleIP
+              ? `${tailscaleIP}:8765 • Stopped`
+              : "Tailscale not connected";
+
+          const statusSetting = new import_obsidian.Setting(containerEl)
+            .setName("Tailscale")
+            .setDesc(statusDesc);
+
+          if (isRunning) {
+            statusSetting.addButton((btn) =>
+              btn.setButtonText("Stop").onClick(() => {
+                ServerManager.stop();
+                this.display();
+              })
+            );
+          } else if (tailscaleIP) {
+            statusSetting.addButton((btn) =>
+              btn.setButtonText("Start").onClick(async () => {
+                await this.plugin.startServer();
+                this.display();
+              })
+            );
+          }
         }
       }
 
       containerEl.createEl("hr");
     }
 
-    // Mobile/Client settings (shown on all devices)
-    containerEl.createEl("h3", { text: "Connection Settings" });
+    // Mobile-only: Connection settings (desktop auto-configures)
+    if (!isDesktop) {
+      containerEl.createEl("h3", { text: "Connection Settings" });
 
-    new import_obsidian.Setting(containerEl)
-      .setName("Remote Server")
-      .setDesc("WebSocket URL (auto-configured when server is enabled on desktop).")
-      .addText((text) =>
-        text
-          .setPlaceholder("ws://192.168.1.100:8765")
-          .setValue(this.plugin.settings.remoteServer)
-          .onChange(async (value) => {
-            this.plugin.settings.remoteServer = value;
-            await this.plugin.saveSettings();
-          })
-      );
+      new import_obsidian.Setting(containerEl)
+        .setName("Remote Server")
+        .setDesc("WebSocket URL (synced from desktop).")
+        .addText((text) =>
+          text
+            .setPlaceholder("ws://192.168.1.100:8765")
+            .setValue(this.plugin.settings.remoteServer)
+            .setDisabled(true)
+        );
 
-    containerEl.createEl("p", {
-      text: "These settings sync across devices via Obsidian Sync. Enable the server on your desktop, and mobile devices will automatically connect.",
-      cls: "setting-item-description"
-    });
+      containerEl.createEl("p", {
+        text: "These settings sync from your desktop via Obsidian Sync. Enable the server on your desktop first.",
+        cls: "setting-item-description"
+      });
+    }
   }
 };
 
@@ -7780,27 +7842,9 @@ var VaultTerminalPlugin = class extends import_obsidian.Plugin {
       }
     }
   }
-  // Start the relay server (with network checks for LAN mode)
+  // Start the relay server
   async startServer() {
     if (!ServerManager.isDesktop()) return;
-
-    // For LAN mode, check if we're on the trusted network
-    if (this.settings.remoteMode === 'lan') {
-      const currentSSID = await ServerManager.getSSID();
-      if (!currentSSID) {
-        console.log('Claude Anywhere: No WiFi detected, not starting server');
-        return;
-      }
-      if (this.settings.trustedNetwork && currentSSID !== this.settings.trustedNetwork) {
-        console.log(`Claude Anywhere: Not on trusted network (${this.settings.trustedNetwork}), not starting server`);
-        return;
-      }
-      // If no trusted network set yet, use current one
-      if (!this.settings.trustedNetwork) {
-        this.settings.trustedNetwork = currentSSID;
-        await this.saveSettings();
-      }
-    }
 
     // For Tailscale mode, check if Tailscale is connected
     if (this.settings.remoteMode === 'tailscale') {
@@ -7809,10 +7853,20 @@ var VaultTerminalPlugin = class extends import_obsidian.Plugin {
         console.log('Claude Anywhere: Tailscale not connected, not starting server');
         return;
       }
+      this.settings.remoteServer = `ws://${tailscaleIP}:8765`;
+    } else {
+      // LAN mode - update the server URL with current IP
+      const localIP = await ServerManager.getLocalIP();
+      if (localIP) {
+        this.settings.remoteServer = `ws://${localIP}:8765`;
+      }
     }
+    await this.saveSettings();
 
     // Start the server
-    const result = await ServerManager.start(this.settings);
+    const path = require('path');
+    const pluginDir = path.join(this.app.vault.adapter.basePath, '.obsidian', 'plugins', 'claude-anywhere');
+    const result = await ServerManager.start(this.settings, pluginDir);
     if (result.success) {
       console.log('Claude Anywhere: Server started');
     } else {
