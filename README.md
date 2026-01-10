@@ -72,6 +72,10 @@ caffeinate -d -i -s
 - [ ] "Tap to reconnect" doesn't work - only Enter key works
 - [ ] Tapping should trigger reconnect on mobile
 
+### Keyboard/Input Issues
+- [ ] Double-escape for vim mode (escape → escape to exit insert mode)
+- [ ] Session persistence on reconnect (should pick up where you left off)
+
 ## Testing Checklist
 
 ### Desktop (Mac)
@@ -122,6 +126,19 @@ caffeinate -d -i -s
 - [ ] Rename trusted network inline (Obsidian modal)
 - [ ] Mac Mini setup guide
 - [ ] Auto-caffeinate option
+- [ ] LaunchAgent plist for auto-starting relay on Mac login
+- [ ] Desktop-to-desktop use case (use from Mac without Claude installed)
+
+## Use Cases
+
+**Primary:** Mobile (iOS/Android) → Mac server
+- Run Claude Code from your phone/tablet
+- Edit vault files remotely
+
+**Secondary:** Desktop → Mac server
+- Use from a second Mac without Claude Code installed
+- Consistent environment (always uses server's Claude setup)
+- Could be useful for shared team setup
 
 ## Files
 
