@@ -1,140 +1,79 @@
 # Claude Anywhere
 
-Run Claude Code from any device (mobile, tablet) via a WebSocket relay to your Mac.
+Run Claude Code on your tablet via Tailscale.
 
-**Note:** This is designed for use with a physical keyboard (e.g., Bluetooth keyboard with tablet). Touch-only mobile use is not well supported - Claude Code's terminal interface requires keyboard-first interaction.
+## Requirements
 
+- Mac with Claude Code installed
+- Tailscale on all devices (same account)
+- Physical keyboard (Bluetooth or attached)
 
-notes: i am not sure if the touch to close keyboard works, or when an external keyboard is on there how that is handled? also big thing w daylight will be can i use voice input as well. 
+## Setup
 
-## How It Works
+### Mac (Server)
 
-1. **Desktop (Mac):** Runs a relay server that spawns Claude Code in a PTY
-2. **Mobile/Tablet:** Connects via WebSocket through the Obsidian plugin
-3. **Sync:** Settings (server URL, auth token) sync via Obsidian Sync
+1. Install Tailscale, sign in: https://tailscale.com/download
+2. Install this plugin in Obsidian
+3. Go to Settings → Claude Anywhere
+4. Enable "Remote Access"
+5. Keep Mac awake:
+   ```bash
+   caffeinate -d -i -s
+   ```
 
-## Quick Start
+### Tablet (Client)
 
-### Prerequisites
-- Mac with Claude Code installed (`claude` command available)
-- Obsidian with Obsidian Sync (for settings sync to mobile)
-- Same WiFi network (LAN mode) OR Tailscale (remote mode)
-- **Physical keyboard** for mobile/tablet use
+1. Install Tailscale, sign in (same account as Mac)
+2. Install plugin via Obsidian Sync (same vault)
+3. Connect physical keyboard
+4. Open Claude Anywhere from the ribbon icon or command palette
 
-### Desktop Setup (Mac)
+## Usage
 
-1. Install the plugin in Obsidian
-2. Go to Settings → Claude Anywhere
-3. Enable "Remote Access"
-4. Click "+ Trust this network"
-5. Server starts automatically
+### Opening Claude
 
-**Keep your Mac awake:**
-```bash
-# Prevent sleep (run in terminal)
-caffeinate -d -i -s
+- **Ribbon icon** - Click the brain icon
+- **Command palette** - Search "Claude":
+  - "Open Claude Code" - Opens or focuses existing terminal
+  - "New Claude Tab (Sidebar)" - Opens in right sidebar
+  - "New Claude Tab (Full Width)" - Opens as main content tab (recommended for mobile)
+
+### Mobile Controls
+
+Arrow keys and special buttons appear at the bottom:
+- **← ↓ ↑ →** - Arrow key navigation
+- **Esc** - Escape key (for vim mode, canceling)
+- **Enter** - Submit/confirm
+
+### Multiple Terminals
+
+You can have multiple Claude terminals open at once. Each gets its own independent session.
+
+## Architecture
+
 ```
+Tablet                          Mac
+┌─────────────────┐             ┌─────────────────┐
+│ Obsidian        │  Tailscale  │ Obsidian        │
+│ + Plugin        │◄───────────►│ + Plugin        │
+│ + xterm.js      │   (secure)  │ + relay_server  │
+│ + Keyboard      │             │ + Claude Code   │
+└─────────────────┘             └─────────────────┘
 
-**Recommended:** Mac Mini as always-on server - low power, runs headless.
-
-### Mobile/Tablet Setup
-
-1. Install plugin in Obsidian (same vault, synced)
-2. Wait for Obsidian Sync to sync settings
-3. Connect Bluetooth keyboard
-4. Open Claude Anywhere - connects automatically
-
-## Modes
-
-### LAN Mode (Default)
-- **Pros:** Easy setup, no extra software
-- **Cons:** Must be on same WiFi
-- **Security:** Token auth (cryptographically secure, synced via Obsidian)
-- **Best for:** Home use
-
-### Tailscale Mode
-- **Pros:** Works from anywhere, encrypted tunnel
-- **Cons:** Requires Tailscale setup on all devices
-- **Security:** WireGuard encryption + token auth
-- **Best for:** Remote access, travel
-
-**Tailscale Setup:**
-1. Install Tailscale: https://tailscale.com/download
-2. Sign in on Mac and mobile device
-3. In plugin settings, switch to Tailscale mode
-4. Server binds to Tailscale IP (100.x.x.x)
+Connection: ws://100.x.x.x:8765 (Tailscale IP)
+```
 
 ## Session Behavior
 
-**On disconnect:** Claude session is killed (intentional - prevents orphan processes)
+**On disconnect:** Claude session is killed (prevents orphan processes)
 
-**To continue a conversation:** Use Claude's built-in `/resume` command after reconnecting. This is cleaner than trying to keep sessions alive across network drops.
-
-## Security Notes
-
-- **LAN mode:** Traffic is unencrypted (`ws://`). Use on trusted networks only.
-- **Tailscale mode:** Traffic encrypted via WireGuard. Safe for any network.
-- **Token auth:** Both modes require token authentication for defense-in-depth.
-- **Token generation:** Uses cryptographically secure random bytes.
-
-## Testing Checklist
-
-### Desktop (Mac)
-- [x] Server starts and stops
-- [x] Terminal connects to server
-- [x] Settings UI - trusted network card
-- [x] Add/remove trusted network
-- [x] Trust new network when on different WiFi
-- [x] Fast plugin load (non-blocking server start)
-
-### Tailscale Mode
-- [x] Tailscale IP auto-detection (multiple fallback methods)
-- [x] Server binds to Tailscale IP only
-- [x] Mode switch (LAN ↔ Tailscale)
-
-### Mobile (with keyboard)
-- [x] Settings sync via Obsidian Sync
-- [x] Terminal connects
-- [x] Arrow key buttons for navigation
-- [x] Escape key works in vim mode
+**To continue a conversation:** Use Claude's `/resume` command after reconnecting.
 
 ## Known Limitations
 
-### Mobile Touch UX
-Touch-only interaction doesn't work well with terminal UX. Claude Code is designed for keyboard input. For mobile use, connect a Bluetooth keyboard.
-
-### Display
-- File references may get truncated on narrow screens
-- Font size is reduced on mobile for more columns
-
-## TODO / Future Features
-
-### High Priority
-- [ ] Server stops on plugin unload
-- [ ] Connection from different WiFi via Tailscale (test end-to-end)
-
-### Medium Priority
-- [ ] Terminal prompt to trust network on first open
-- [ ] Better Tailscale setup instructions in UI
-- [ ] Multiple trusted networks (array instead of single)
-- [ ] Desktop-to-desktop use case (use from Mac without Claude installed)
-
-### Nice to Have
-- [ ] Windows support
-- [ ] Mac Mini setup guide
-- [ ] Auto-caffeinate option
-- [ ] LaunchAgent plist for auto-starting relay on Mac login
-
-## Use Cases
-
-**Primary:** Tablet with keyboard → Mac server
-- Run Claude Code from your tablet (iPad, Android tablet, Daylight)
-- Edit vault files remotely
-- Works great with Bluetooth keyboard
-
-**Secondary:** Desktop → Mac server
-- Use from a second Mac without Claude Code installed
-- Consistent environment (always uses server's Claude setup)
+- **Narrow sidebar** - Mobile pinned sidebar is too narrow. Use "Full Width" mode instead.
+- **Physical keyboard required** - Claude Code is keyboard-first
+- **Some Android fonts** - Box-drawing characters may show as diamonds on some devices
 
 ## Files
 
@@ -143,25 +82,13 @@ Touch-only interaction doesn't work well with terminal UX. Claude Code is design
 - `manifest.json` - Plugin metadata
 - `styles.css` - Terminal styling
 
-## Development
+## Troubleshooting
 
-After changes, sync to test vault:
-```bash
-cp main.js styles.css manifest.json relay_server.py \
-   ~/Github/exec/.obsidian/plugins/claude-anywhere/
-```
+**"Connection failed"**
+- Check Tailscale is connected on both devices
+- Check server is running (Settings → Claude Anywhere on Mac)
+- Try toggling Remote Access off/on
 
-## Architecture
-
-```
-Tablet/Mobile                    Mac (Server)
-┌─────────────────┐              ┌─────────────────┐
-│ Obsidian        │   WebSocket  │ Obsidian        │
-│ + Plugin        │◄────────────►│ + Plugin        │
-│ + xterm.js      │              │ + relay_server  │
-│ + Keyboard      │              │ + Claude Code   │
-└─────────────────┘              └─────────────────┘
-```
-
-**LAN Mode:** `ws://192.168.x.x:8765` (local network)
-**Tailscale:** `ws://100.x.x.x:8765` (Tailscale network)
+**Terminal text garbled**
+- Close any duplicate terminal tabs
+- Restart the server (toggle Remote Access)

@@ -8,7 +8,6 @@ Run this on your Mac, connect from any device with the modified Obsidian plugin.
 No external dependencies - uses only Python standard library.
 """
 
-import argparse
 import asyncio
 import base64
 import fcntl
@@ -16,19 +15,15 @@ import hashlib
 import json
 import os
 import pty
-import secrets
 import select
 import signal
 import struct
 import subprocess
 import termios
-import time
 from pathlib import Path
 
 # Configuration
 PORT = 8765
-TOKEN_DIR = Path.home() / ".claude-anywhere"
-TOKEN_FILE = TOKEN_DIR / "token"
 
 def find_claude():
     """Find the claude executable."""
@@ -240,23 +235,6 @@ def get_tailscale_ip():
     return None
 
 
-def get_or_create_token():
-    """Get token from env var, file, or create a new one."""
-    env_token = os.environ.get('CLAUDE_ANYWHERE_TOKEN')
-    if env_token:
-        return env_token
-
-    TOKEN_DIR.mkdir(exist_ok=True)
-
-    if TOKEN_FILE.exists():
-        return TOKEN_FILE.read_text().strip()
-
-    token = secrets.token_urlsafe(32)
-    TOKEN_FILE.write_text(token)
-    TOKEN_FILE.chmod(0o600)
-    return token
-
-
 class ClaudeSession:
     """Manages a single Claude Code PTY session."""
 
@@ -399,16 +377,8 @@ class ClaudeSession:
             self.master_fd = None
 
 
-# Global state
-current_session = None
-require_token = True
-expected_token = None
-
-
 async def handle_client(reader, writer):
-    """Handle a WebSocket client connection."""
-    global current_session
-
+    """Handle a WebSocket client connection. Each client gets its own Claude session."""
     websocket = await WebSocketConnection.accept(reader, writer)
     if not websocket:
         return
@@ -416,6 +386,8 @@ async def handle_client(reader, writer):
     client_ip = websocket.remote_address[0]
     print(f"Client connected: {client_ip}", flush=True)
 
+    # Each connection has its own session (not global)
+    session = None
     cwd = None
     cols = 80
     rows = 24
@@ -429,37 +401,21 @@ async def handle_client(reader, writer):
                 cols = msg.get("cols", 80)
                 rows = msg.get("rows", 24)
                 print(f"Init: cwd={cwd}, cols={cols}, rows={rows}", flush=True)
-
-                if require_token:
-                    client_token = msg.get("token", "")
-                    if client_token != expected_token:
-                        print(f"Auth failed: invalid token from {client_ip}", flush=True)
-                        await websocket.send(json.dumps({
-                            "type": "status",
-                            "status": "auth_failed",
-                            "message": "Invalid or missing token"
-                        }))
-                        await websocket.close()
-                        return
-                    print(f"Auth successful for {client_ip}", flush=True)
     except (asyncio.TimeoutError, json.JSONDecodeError) as e:
         print(f"No init message received: {e}", flush=True)
-        if require_token:
-            await websocket.close()
-            return
 
     async def send_status(status, message=""):
         await websocket.send(json.dumps({"type": "status", "status": status, "message": message}))
 
     async def start_new_session():
-        global current_session
+        nonlocal session
         await send_status("starting", "Starting Claude...")
-        if current_session:
-            await current_session.stop()
-        current_session = ClaudeSession()
-        await current_session.start(websocket, cwd=cwd)
+        if session:
+            await session.stop()
+        session = ClaudeSession()
+        await session.start(websocket, cwd=cwd)
         if cwd:
-            current_session.resize(cols, rows)
+            session.resize(cols, rows)
         await send_status("ready", "Claude is ready")
 
     print(f"Starting new Claude session in {cwd}...", flush=True)
@@ -476,7 +432,8 @@ async def handle_client(reader, writer):
                 try:
                     msg = json.loads(message)
                     if msg.get("type") == "resize":
-                        current_session.resize(msg["cols"], msg["rows"])
+                        if session:
+                            session.resize(msg["cols"], msg["rows"])
                         continue
                     elif msg.get("type") == "init":
                         continue
@@ -489,73 +446,37 @@ async def handle_client(reader, writer):
                 except json.JSONDecodeError:
                     pass
 
-            if current_session:
-                current_session.write(message)
+            if session:
+                session.write(message)
 
     except ConnectionError:
         print(f"Client disconnected: {client_ip}", flush=True)
     except Exception as e:
         print(f"Error: {e}", flush=True)
     finally:
-        if current_session:
-            print("Stopping Claude session...", flush=True)
-            await current_session.stop()
-            current_session = None
+        if session:
+            print(f"Stopping Claude session for {client_ip}...", flush=True)
+            await session.stop()
         await websocket.close()
-        print("Connection closed", flush=True)
-
-
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Claude Anywhere Relay Server",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Modes:
-  LAN (default)   Listens on all interfaces, requires token auth.
-  Tailscale       Listens only on Tailscale interface, no token needed.
-        """
-    )
-    parser.add_argument("--tailscale", "-t", action="store_true",
-                        help="Use Tailscale mode")
-    parser.add_argument("--port", "-p", type=int, default=PORT,
-                        help=f"Port to listen on (default: {PORT})")
-    return parser.parse_args()
+        print(f"Connection closed: {client_ip}", flush=True)
 
 
 async def main():
     """Main entry point."""
-    global require_token, expected_token
-
-    args = parse_args()
-    port = args.port
-
     print("Claude Anywhere Relay Server")
     print("=" * 40)
 
-    # Always require token for defense-in-depth security
-    require_token = True
-    expected_token = get_or_create_token()
+    tailscale_ip = get_tailscale_ip()
+    if not tailscale_ip:
+        print("ERROR: Tailscale not connected!")
+        print("Please ensure Tailscale is running and connected.")
+        return
 
-    if args.tailscale:
-        tailscale_ip = get_tailscale_ip()
-        if not tailscale_ip:
-            print("ERROR: Tailscale not detected!")
-            return
-
-        host = tailscale_ip
-        print(f"Mode: Tailscale (encrypted + token)")
-        print(f"Listening on ws://{host}:{port}")
-    else:
-        host = "0.0.0.0"
-        print(f"Mode: LAN (token required)")
-        print(f"Listening on ws://{host}:{port}")
-
-    print(f"Token: {expected_token}")
-
+    print(f"Tailscale IP: {tailscale_ip}")
+    print(f"Listening on ws://{tailscale_ip}:{PORT}")
     print()
 
-    server = await asyncio.start_server(handle_client, host, port)
+    server = await asyncio.start_server(handle_client, tailscale_ip, PORT)
     async with server:
         await server.serve_forever()
 

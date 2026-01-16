@@ -101,3 +101,28 @@
 .mobile-arrow-controls .special-btn:active {
 	background: var(--interactive-accent);
 }
+
+/* Mobile: Font with good Unicode/box-drawing support */
+/* Android: Roboto Mono, iOS: SF Mono */
+.is-mobile .vault-terminal-host .xterm,
+.is-mobile .vault-terminal-host .xterm-rows {
+	font-family: "Roboto Mono", "SF Mono", Menlo, monospace !important;
+}
+
+/* Mobile: Arrow controls - bigger touch targets */
+.is-mobile .mobile-arrow-controls {
+	gap: 6px;
+	padding: 6px;
+}
+
+.is-mobile .mobile-arrow-controls .arrow-btn,
+.is-mobile .mobile-arrow-controls .special-btn {
+	width: 44px;
+	height: 44px;
+	font-size: 16px;
+}
+
+.is-mobile .mobile-arrow-controls .special-btn {
+	padding: 0 12px;
+	font-size: 13px;
+}
