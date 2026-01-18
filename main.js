@@ -6753,7 +6753,7 @@ var TerminalView = class extends import_obsidian.ItemView {
   async onOpen() {
     this.injectCSS();
     this.buildUI();
-    this.initTerminal();
+    await this.initTerminal();
     this.startShell();
     this.setupEscapeHandler();
   }
@@ -7100,7 +7100,7 @@ var TerminalView = class extends import_obsidian.ItemView {
       this.term.options.theme = newTheme;
     }
   }
-  initTerminal() {
+  async initTerminal() {
     if (!this.termHost)
       return;
     // Use BIGGER font on mobile for readability
@@ -7119,7 +7119,8 @@ var TerminalView = class extends import_obsidian.ItemView {
       fontSize: fontSize,
       fontFamily: fontFamily,
       theme: this.getThemeColors(),
-      scrollback: 10000
+      scrollback: this.app.isMobile ? 1000 : 10000,  // Reduced on mobile for performance
+      smoothScrollDuration: 100  // Slightly smoother scroll animation
     });
     this.fitAddon = new import_addon_fit.FitAddon();
     this.term.loadAddon(this.fitAddon);
@@ -7127,6 +7128,19 @@ var TerminalView = class extends import_obsidian.ItemView {
     this.term.parser?.registerCsiHandler({ final: "I" }, () => true);
     this.term.parser?.registerCsiHandler({ final: "O" }, () => true);
     this.term.attachCustomKeyEventHandler((ev) => {
+      // Shift+Enter or Alt+Enter: send Alt+Enter for multi-line input
+      // Must block both keydown and keypress events to prevent xterm from sending normal Enter
+      if (ev.key === 'Enter' && (ev.shiftKey || ev.altKey)) {
+        if (ev.type === 'keydown') {
+          // Send to WebSocket (remote) or local PTY
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send('\x1b\r');
+          } else if (this.proc && !this.proc.killed) {
+            this.proc.stdin?.write('\x1b\r');
+          }
+        }
+        return false; // Block both keydown and keypress
+      }
       if (ev.type === 'keydown') {
         // Cmd+Arrow: readline shortcuts for line navigation
         if (ev.metaKey) {
@@ -7138,13 +7152,6 @@ var TerminalView = class extends import_obsidian.ItemView {
             this.proc?.stdin?.write('\x01'); // Ctrl+A = start of line
             return false;
           }
-        }
-        // Shift+Enter: send Alt+Enter for multi-line input
-        if (ev.key === 'Enter' && ev.shiftKey) {
-          if (this.proc && !this.proc.killed) {
-            this.proc.stdin?.write('\x1b\r');
-          }
-          return false;
         }
       }
       return true;
@@ -7161,10 +7168,12 @@ var TerminalView = class extends import_obsidian.ItemView {
         }
       });
     }
-    this.waitForHostReady().then(() => {
-      this.fit();
-      setTimeout(() => this.fit(), 50);
-    });
+    // Wait for container to have proper dimensions before fitting
+    await this.waitForHostReady();
+    this.fit();
+    // Second fit after brief delay for full-width mode layout settling
+    await new Promise(resolve => setTimeout(resolve, 100));
+    this.fit();
     this.resizeObserver = new ResizeObserver(() => this.debouncedFit());
     this.resizeObserver.observe(this.termHost);
     // Watch for theme changes
@@ -7184,14 +7193,32 @@ var TerminalView = class extends import_obsidian.ItemView {
     this.fitTimeout = setTimeout(() => {
       this.fit();
       this.fitTimeout = null;
-    }, 100);
+    }, 200); // 200ms debounce for better handling of rapid resize events
+  }
+  // Debounced resize notification to PTY/WebSocket - prevents rapid resize spam during orientation changes
+  sendDebouncedResize(cols, rows) {
+    if (this.resizeTimeout) clearTimeout(this.resizeTimeout);
+    this.resizeTimeout = setTimeout(() => {
+      // Send to local PTY
+      if (this.proc && !this.proc.killed) {
+        this.proc.stdin?.write(`\x1b]RESIZE;${cols};${rows}\x07`);
+      }
+      // Send to remote WebSocket
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      }
+      this.resizeTimeout = null;
+    }, 300); // 300ms debounce - let dimensions settle before notifying PTY
   }
   async waitForHostReady() {
-    if (!this.fitAddon)
+    if (!this.fitAddon || !this.termHost)
       return false;
-    for (let i = 0; i < 10; i++) {
+    // Wait longer for full-width mode - up to 1 second total
+    for (let i = 0; i < 20; i++) {
+      // Check both fitAddon dimensions AND actual container size
       const dim = this.fitAddon.proposeDimensions();
-      if (dim && dim.cols > 0 && dim.rows > 0) {
+      const hostRect = this.termHost.getBoundingClientRect();
+      if (dim && dim.cols > 0 && dim.rows > 0 && hostRect.width > 0 && hostRect.height > 0) {
         return true;
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -7311,9 +7338,7 @@ var TerminalView = class extends import_obsidian.ItemView {
       }
     });
     this.term?.onResize(({ cols: c, rows: r }) => {
-      if (this.proc && !this.proc.killed) {
-        this.proc.stdin?.write(`\x1b]RESIZE;${c};${r}\x07`);
-      }
+      this.sendDebouncedResize(c, r);
     });
     this.term?.focus();
     // Windows still needs auto-launch since we can't use exec there
@@ -7359,27 +7384,31 @@ var TerminalView = class extends import_obsidian.ItemView {
       this.ws = new WebSocket(serverUrl);
 
       this.ws.onopen = () => {
-        // Send init - use saved vaultPath (set by desktop) or fallback to current
-        const cwd = this.plugin.settings.vaultPath || this.plugin.getVaultPath();
-        this.ws.send(JSON.stringify({ type: "init", cols, rows, cwd }));
+        // Fit terminal FIRST to get accurate dimensions before starting session
+        if (this.fitAddon) {
+          this.fitAddon.fit();
+        }
 
-        // Fit terminal to actual container size and send resize
-        // Use longer delay to ensure container is fully rendered
+        // Use actual terminal dimensions (after fit), not the passed-in values
+        const actualCols = this.term?.cols || cols;
+        const actualRows = this.term?.rows || rows;
+
+        // Send init with correct dimensions
+        const cwd = this.plugin.settings.vaultPath || this.plugin.getVaultPath();
+        this.ws.send(JSON.stringify({ type: "init", cols: actualCols, rows: actualRows, cwd }));
+
+        // Do another fit after a delay in case layout was still settling
         setTimeout(() => {
-          if (this.fitAddon && this.term) {
+          if (this.fitAddon && this.term && this.ws?.readyState === WebSocket.OPEN) {
             this.fitAddon.fit();
-            // Fit again after a short delay to catch layout settling
-            setTimeout(() => {
-              if (this.fitAddon && this.term && this.ws?.readyState === WebSocket.OPEN) {
-                this.fitAddon.fit();
-                const actualCols = this.term.cols;
-                const actualRows = this.term.rows;
-                console.log("Terminal size after fit:", actualCols, "x", actualRows);
-                this.ws.send(JSON.stringify({ type: "resize", cols: actualCols, rows: actualRows }));
-              }
-            }, 300);
+            const newCols = this.term.cols;
+            const newRows = this.term.rows;
+            // Only send resize if dimensions actually changed
+            if (newCols !== actualCols || newRows !== actualRows) {
+              this.ws.send(JSON.stringify({ type: "resize", cols: newCols, rows: newRows }));
+            }
           }
-        }, 200);
+        }, 300);
       };
 
       this.ws.onmessage = (event) => {
@@ -7450,11 +7479,9 @@ var TerminalView = class extends import_obsidian.ItemView {
           }
         });
 
-        // Handle terminal resize
+        // Handle terminal resize (debounced to prevent rapid resize spam)
         this.term?.onResize(({ cols: c, rows: r }) => {
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: "resize", cols: c, rows: r }));
-          }
+          this.sendDebouncedResize(c, r);
         });
 
         // Handle touch for reconnect on mobile (touch doesn't trigger onData)
@@ -7482,6 +7509,10 @@ var TerminalView = class extends import_obsidian.ItemView {
     if (this.fitTimeout) {
       clearTimeout(this.fitTimeout);
       this.fitTimeout = null;
+    }
+    if (this.resizeTimeout) {
+      clearTimeout(this.resizeTimeout);
+      this.resizeTimeout = null;
     }
     if (this.escapeScope) {
       this.app.keymap.popScope(this.escapeScope);
@@ -7725,6 +7756,7 @@ var ClaudeAnywhereSettingTab = class extends import_obsidian.PluginSettingTab {
 };
 
 var VaultTerminalPlugin = class extends import_obsidian.Plugin {
+  lastRibbonClick = 0;
   async onload() {
     await this.loadSettings();
 
@@ -7745,7 +7777,12 @@ var VaultTerminalPlugin = class extends import_obsidian.Plugin {
 
     this.addSettingTab(new ClaudeAnywhereSettingTab(this.app, this));
     this.registerView(VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
-    this.addRibbonIcon("brain", "Open Claude Anywhere", () => this.activateView());
+    this.addRibbonIcon("brain", "Open Claude Anywhere", () => {
+      const now = Date.now();
+      if (now - this.lastRibbonClick < 1500) return; // 1.5s throttle to prevent accidental double-clicks
+      this.lastRibbonClick = now;
+      this.activateView();
+    });
     this.addCommand({
       id: "open-claude",
       name: "Open Claude Code",
@@ -7760,6 +7797,11 @@ var VaultTerminalPlugin = class extends import_obsidian.Plugin {
       id: "new-claude-fullscreen",
       name: "New Claude Tab (Full Width)",
       callback: () => this.createFullScreenTab()
+    });
+    this.addCommand({
+      id: "new-claude-split",
+      name: "New Claude Tab (Split View)",
+      callback: () => this.createSplitTab()
     });
     this.addCommand({
       id: "close-claude-tab",
@@ -7853,6 +7895,13 @@ var VaultTerminalPlugin = class extends import_obsidian.Plugin {
     if (leaf) {
       await leaf.setViewState({ type: VIEW_TYPE, active: true });
       this.app.workspace.revealLeaf(leaf);
+      // Focus the terminal after the leaf is revealed
+      setTimeout(() => {
+        const view = leaf.view;
+        if (view instanceof TerminalView && view.term) {
+          view.term.focus();
+        }
+      }, 50);
     }
   }
   async createFullScreenTab() {
@@ -7861,6 +7910,28 @@ var VaultTerminalPlugin = class extends import_obsidian.Plugin {
     if (leaf) {
       await leaf.setViewState({ type: VIEW_TYPE, active: true });
       this.app.workspace.revealLeaf(leaf);
+      // Focus the terminal after the leaf is revealed
+      setTimeout(() => {
+        const view = leaf.view;
+        if (view instanceof TerminalView && view.term) {
+          view.term.focus();
+        }
+      }, 50);
+    }
+  }
+  async createSplitTab() {
+    // Split view - opens Claude alongside current note
+    const leaf = this.app.workspace.getLeaf('split');
+    if (leaf) {
+      await leaf.setViewState({ type: VIEW_TYPE, active: true });
+      this.app.workspace.revealLeaf(leaf);
+      // Focus the terminal after the leaf is revealed
+      setTimeout(() => {
+        const view = leaf.view;
+        if (view instanceof TerminalView && view.term) {
+          view.term.focus();
+        }
+      }, 50);
     }
   }
 };

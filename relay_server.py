@@ -244,10 +244,15 @@ class ClaudeSession:
         self.websocket = None
         self.read_task = None
 
-    async def start(self, websocket, cwd=None):
+    async def start(self, websocket, cwd=None, cols=80, rows=24):
         """Spawn Claude Code in a PTY and start relaying."""
         self.websocket = websocket
         self.master_fd, slave_fd = pty.openpty()
+
+        # Set PTY size BEFORE forking so Claude starts with correct dimensions
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+
         self.pid = os.fork()
 
         if self.pid == 0:
@@ -409,13 +414,11 @@ async def handle_client(reader, writer):
 
     async def start_new_session():
         nonlocal session
-        await send_status("starting", "Starting Claude...")
         if session:
             await session.stop()
         session = ClaudeSession()
-        await session.start(websocket, cwd=cwd)
-        if cwd:
-            session.resize(cols, rows)
+        # Pass cols/rows so PTY is sized correctly BEFORE Claude starts
+        await session.start(websocket, cwd=cwd, cols=cols, rows=rows)
         await send_status("ready", "Claude is ready")
 
     print(f"Starting new Claude session in {cwd}...", flush=True)
@@ -432,8 +435,11 @@ async def handle_client(reader, writer):
                 try:
                     msg = json.loads(message)
                     if msg.get("type") == "resize":
+                        # Store new dimensions for session restarts
+                        cols = msg["cols"]
+                        rows = msg["rows"]
                         if session:
-                            session.resize(msg["cols"], msg["rows"])
+                            session.resize(cols, rows)
                         continue
                     elif msg.get("type") == "init":
                         continue

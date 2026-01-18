@@ -51,7 +51,31 @@
 /* Keep the hidden textarea invisible but focusable for mobile keyboard */
 .vault-terminal-host .xterm .xterm-helper-textarea {
 	opacity: 0 !important;
+	caret-color: transparent !important; /* Hide iOS text cursor */
 	/* Don't use width:0/height:0 or position off-screen - breaks mobile keyboard */
+}
+
+/* Constrain IME composition preview (e.g., Gboard voice input) to terminal width */
+.vault-terminal-host .xterm {
+	contain: layout style;
+	overflow: clip;
+}
+
+/* Force IME composition text to stay within bounds */
+.vault-terminal-host .xterm-helper-textarea {
+	max-width: 100% !important;
+	word-wrap: break-word !important;
+	overflow-wrap: break-word !important;
+}
+
+/* Prevent composition preview from overflowing container */
+.vault-terminal {
+	contain: layout;
+}
+
+.workspace-leaf-content[data-type="vault-terminal"] {
+	contain: layout style;
+	overflow: clip;
 }
 
 /* Mobile arrow key controls */
