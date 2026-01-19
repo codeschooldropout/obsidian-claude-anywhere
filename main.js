@@ -6740,6 +6740,10 @@ var TerminalView = class extends import_obsidian.ItemView {
     this.sessionEnded = false;
     this.connectionLost = false;
     this.termHandlersSet = false;
+    // Scroll position manager state
+    this.lastStableScrollPos = 0;
+    this.scrollLockUntil = 0;
+    this.scrollRestoreTimeout = null;
   }
   getViewType() {
     return VIEW_TYPE;
@@ -7127,6 +7131,35 @@ var TerminalView = class extends import_obsidian.ItemView {
     this.term.open(this.termHost);
     this.term.parser?.registerCsiHandler({ final: "I" }, () => true);
     this.term.parser?.registerCsiHandler({ final: "O" }, () => true);
+    // Scroll position manager - prevents terminal jumping during Claude Code permission prompts
+    // Ink TUI redraws can cause unwanted jumps to top; this detects and restores position
+    this.term.onScroll((scrollPos) => {
+      const now = Date.now();
+      // If we're in a lock period, ignore scroll events
+      if (now < this.scrollLockUntil) {
+        return;
+      }
+      // Detect suspicious jump: position suddenly 0 from a significant scroll position (>10 lines)
+      const SIGNIFICANT_SCROLL_THRESHOLD = 10;
+      if (scrollPos === 0 && this.lastStableScrollPos > SIGNIFICANT_SCROLL_THRESHOLD) {
+        // Clear any pending restore
+        if (this.scrollRestoreTimeout) {
+          clearTimeout(this.scrollRestoreTimeout);
+        }
+        // Lock scroll updates for 200ms to prevent conflicting updates
+        this.scrollLockUntil = now + 200;
+        // Restore after brief delay (50ms) to let the redraw settle
+        this.scrollRestoreTimeout = setTimeout(() => {
+          if (this.term) {
+            this.term.scrollToLine(this.lastStableScrollPos);
+          }
+          this.scrollRestoreTimeout = null;
+        }, 50);
+      } else {
+        // Normal scroll - update stable position
+        this.lastStableScrollPos = scrollPos;
+      }
+    });
     this.term.attachCustomKeyEventHandler((ev) => {
       // Shift+Enter or Alt+Enter: send Alt+Enter for multi-line input
       // Must block both keydown and keypress events to prevent xterm from sending normal Enter
@@ -7513,6 +7546,10 @@ var TerminalView = class extends import_obsidian.ItemView {
     if (this.resizeTimeout) {
       clearTimeout(this.resizeTimeout);
       this.resizeTimeout = null;
+    }
+    if (this.scrollRestoreTimeout) {
+      clearTimeout(this.scrollRestoreTimeout);
+      this.scrollRestoreTimeout = null;
     }
     if (this.escapeScope) {
       this.app.keymap.popScope(this.escapeScope);

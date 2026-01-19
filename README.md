@@ -123,6 +123,10 @@ Connection: ws://100.x.x.x:8765 (Tailscale IP)
 **Terminal looks garbled**
 - Close the terminal tab and open a new one
 
+## Author
+
+Built by [Derek Larson](https://dtlarson.com). Want to get more out of Claude Code? See [Delegate with Claude](https://delegatewithclaude.com).
+
 ## Files
 
 - `main.js` - Obsidian plugin code
