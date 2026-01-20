@@ -7131,6 +7131,20 @@ var TerminalView = class extends import_obsidian.ItemView {
     this.term.open(this.termHost);
     this.term.parser?.registerCsiHandler({ final: "I" }, () => true);
     this.term.parser?.registerCsiHandler({ final: "O" }, () => true);
+    // Fix for Android GBoard voice dictation: clear textarea before new composition starts
+    // Without this, the textarea accumulates text between voice inputs, causing
+    // subsequent dictations to include stale content from previous inputs
+    // See: https://github.com/xtermjs/xterm.js/issues/3600
+    const textarea = this.term.textarea;
+    if (textarea) {
+      this.compositionStartHandler = () => {
+        // Clear stale content BEFORE xterm's handler captures start position
+        // Using capture phase ensures this runs before xterm's bubble-phase listener
+        textarea.value = "";
+      };
+      // capture: true makes this run BEFORE xterm's compositionstart handler
+      textarea.addEventListener('compositionstart', this.compositionStartHandler, true);
+    }
     // Debounce duplicate paste events (xterm.js can fire twice on external keyboards)
     this.lastPasteTime = 0;
     this.pasteDebounceHandler = (e) => {
@@ -7555,6 +7569,10 @@ var TerminalView = class extends import_obsidian.ItemView {
     if (this.pasteDebounceHandler) {
       this.termHost?.removeEventListener('paste', this.pasteDebounceHandler, true);
       this.pasteDebounceHandler = null;
+    }
+    if (this.compositionStartHandler) {
+      this.term?.textarea?.removeEventListener('compositionstart', this.compositionStartHandler, true);
+      this.compositionStartHandler = null;
     }
     if (this.fitTimeout) {
       clearTimeout(this.fitTimeout);
