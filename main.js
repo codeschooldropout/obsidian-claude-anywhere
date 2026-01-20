@@ -7131,6 +7131,19 @@ var TerminalView = class extends import_obsidian.ItemView {
     this.term.open(this.termHost);
     this.term.parser?.registerCsiHandler({ final: "I" }, () => true);
     this.term.parser?.registerCsiHandler({ final: "O" }, () => true);
+    // Debounce duplicate paste events (xterm.js can fire twice on external keyboards)
+    this.lastPasteTime = 0;
+    this.pasteDebounceHandler = (e) => {
+      const now = Date.now();
+      if (now - this.lastPasteTime < 50) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        return;
+      }
+      this.lastPasteTime = now;
+    };
+    // Capture phase to intercept before xterm's handlers
+    this.termHost.addEventListener('paste', this.pasteDebounceHandler, true);
     // Scroll position manager - prevents terminal jumping during Claude Code permission prompts
     // Ink TUI redraws can cause unwanted jumps to top; this detects and restores position
     this.term.onScroll((scrollPos) => {
@@ -7539,6 +7552,10 @@ var TerminalView = class extends import_obsidian.ItemView {
   dispose() {
     this.resizeObserver?.disconnect();
     this.themeObserver?.disconnect();
+    if (this.pasteDebounceHandler) {
+      this.termHost?.removeEventListener('paste', this.pasteDebounceHandler, true);
+      this.pasteDebounceHandler = null;
+    }
     if (this.fitTimeout) {
       clearTimeout(this.fitTimeout);
       this.fitTimeout = null;
