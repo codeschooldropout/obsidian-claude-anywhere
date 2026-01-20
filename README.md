@@ -2,6 +2,8 @@
 
 Run Claude Code from Obsidian on your mobile device(s).
 
+Built by [Derek Larson](https://dtlarson.com).
+
 ## Compatibility
 
 - Android (phone, tablet)
@@ -123,13 +125,13 @@ Connection: ws://100.x.x.x:8765 (Tailscale IP)
 **Terminal looks garbled**
 - Close the terminal tab and open a new one
 
-## Author
-
-Built by [Derek Larson](https://dtlarson.com). Want to get more out of Claude Code? See [Delegate with Claude](https://delegatewithclaude.com).
-
 ## Files
 
 - `main.js` - Obsidian plugin code
 - `manifest.json` - Plugin metadata
 - `styles.css` - Terminal styling
 - `relay_server.py` - WebSocket relay server (runs on Mac)
+
+## Dive Deeper
+
+Want to get more out of Claude Code? See [Delegate with Claude](https://delegatewithclaude.com).
