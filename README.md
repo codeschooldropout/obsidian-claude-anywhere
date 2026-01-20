@@ -87,7 +87,9 @@ On-screen buttons appear at the bottom for keys missing from software keyboards:
 
 For multi-line prompts in Claude Code, press **Alt+Enter** or **Shift+Enter** on your external keyboard.
 
-## Architecture
+## How It Works
+
+Streams your Mac's Claude Code session to mobile over Tailscale. File sync pushes Claude's edits back to your device.
 
 ```
 Mobile                          Mac
@@ -101,10 +103,6 @@ Mobile                          Mac
 Connection: ws://100.x.x.x:8765 (Tailscale IP)
 ```
 
-**Why file sync?**
-- **Tailscale** handles terminal communication - what you type and what Claude says streams directly to your mobile device
-- **File sync** handles Claude's edits - when Claude modifies files, those changes happen on your Mac's filesystem. Sync pushes them to your mobile device so you can see them in Obsidian.
-
 ## Session Behavior
 
 **On disconnect:** Claude session is killed
@@ -113,7 +111,7 @@ Connection: ws://100.x.x.x:8765 (Tailscale IP)
 
 ## Known Limitations
 
-**Scroll performance on mobile** - Scrolling through terminal history is choppy on mobile devices (xterm.js limitation). Use **Alt+↓** (Option+↓ on Mac keyboards) to jump to the bottom.
+**Scrolling on mobile** - Dragging inside the terminal doesn't scroll well. Use the scrollbar on the right edge, or **Alt+↓** to jump to the bottom.
 
 ## Troubleshooting
 
