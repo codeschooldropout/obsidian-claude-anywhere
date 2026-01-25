@@ -1,6 +1,10 @@
 # Claude Anywhere
 
-Run Claude Code on your mobile device(s) via Tailscale.
+Run Claude Code from Obsidian on your mobile devices.
+
+Built by [Derek Larson](https://dtlarson.com) for [Delegate with Claude](https://delegatewithclaude.com).
+
+![Claude Anywhere on tablet](tablet-image.png)
 
 ## Compatibility
 
@@ -79,6 +83,8 @@ On-screen buttons appear at the bottom for keys missing from software keyboards:
 - **Esc** - Escape key
 - **Enter** - Submit
 
+![Claude Anywhere on iPhone](iphone-screenshot.jpeg)
+
 ### Multi-line Input
 
 For multi-line prompts in Claude Code, press **Alt+Enter** or **Shift+Enter** on your external keyboard.
@@ -124,3 +130,7 @@ Connection: ws://100.x.x.x:8765 (Tailscale IP)
 - `manifest.json` - Plugin metadata
 - `styles.css` - Terminal styling
 - `relay_server.py` - WebSocket relay server (runs on Mac)
+
+## Related
+
+- **[Claude Sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar)** - Run Claude Code in your Obsidian sidebar (desktop)
