@@ -15,6 +15,7 @@ Built by [Derek Larson](https://dtlarson.com) for [Delegate with Claude](https:/
 
 - Mac with [Claude Code](https://claude.ai/claude-code) installed
 - [Tailscale](https://tailscale.com/download) on both devices (same account)
+- File sync between Mac and mobile (Obsidian Sync, iCloud, Dropbox, etc.)
 - External keyboard recommended
 
 ## Setup
@@ -29,7 +30,7 @@ Download from [tailscale.com/download](https://tailscale.com/download), open the
 
 Open Terminal, navigate to your Obsidian vault, and run:
 ```bash
-mkdir -p .obsidian/plugins/claude-anywhere && cd .obsidian/plugins/claude-anywhere && curl -LO https://github.com/dereklarson/claude-anywhere/raw/main/main.js && curl -LO https://github.com/dereklarson/claude-anywhere/raw/main/manifest.json && curl -LO https://github.com/dereklarson/claude-anywhere/raw/main/styles.css && curl -LO https://github.com/dereklarson/claude-anywhere/raw/main/relay_server.py
+mkdir -p .obsidian/plugins/claude-anywhere && cd .obsidian/plugins/claude-anywhere && curl -LO https://github.com/derek-larson14/obsidian-claude-anywhere/raw/main/main.js && curl -LO https://github.com/derek-larson14/obsidian-claude-anywhere/raw/main/manifest.json && curl -LO https://github.com/derek-larson14/obsidian-claude-anywhere/raw/main/styles.css
 ```
 
 #### 3. Enable the Plugin
@@ -40,18 +41,19 @@ mkdir -p .obsidian/plugins/claude-anywhere && cd .obsidian/plugins/claude-anywhe
 
 #### 4. Keep Your Mac Awake
 
-While using Claude remotely, prevent your Mac from sleeping. Open Terminal and run:
+While using Claude remotely, prevent your Mac from sleeping.
+
+**Option A: Amphetamine (Recommended)**
+
+Install [Amphetamine](https://apps.apple.com/us/app/amphetamine/id937984704?mt=12) from the App Store. It provides a menu bar icon to easily toggle sleep prevention with options for timed sessions, triggers, and more.
+
+**Option B: Terminal**
 
 ```bash
 caffeinate -dis
 ```
 
 This prevents sleep even when closing the lid (while plugged in). Close the Terminal window or press `Ctrl+C` to restore normal sleep behavior.
-
-For a timed session (e.g., 2 hours):
-```bash
-caffeinate -dis -t 7200
-```
 
 ### Mobile Device (Client)
 
@@ -62,7 +64,7 @@ caffeinate -dis -t 7200
 3. Enable the plugin: Settings → Community plugins → Enable "Claude Anywhere"
 4. Open Claude from the command palette (swipe down): search "Claude"
 
-**Files needed for manual install:** `main.js`, `manifest.json`, `styles.css`, `relay_server.py`
+**Files needed for manual install:** `main.js`, `manifest.json`, `styles.css`
 
 ## Usage
 
@@ -89,7 +91,9 @@ On-screen buttons appear at the bottom for keys missing from software keyboards:
 
 For multi-line prompts in Claude Code, press **Alt+Enter** or **Shift+Enter** on your external keyboard.
 
-## Architecture
+## How It Works
+
+Streams your Mac's Claude Code session to mobile over Tailscale. File sync pushes Claude's edits back to your device.
 
 ```
 Mobile                          Mac
@@ -111,7 +115,7 @@ Connection: ws://100.x.x.x:8765 (Tailscale IP)
 
 ## Known Limitations
 
-**Scroll performance on mobile** - Scrolling through terminal history is choppy on mobile devices (xterm.js limitation). Use **Alt+↓** (Option+↓ on Mac keyboards) to jump to the bottom.
+**Scrolling on mobile** - Dragging inside the terminal doesn't scroll well. Use the scrollbar on the right edge, or **Alt+↓** to jump to the bottom.
 
 ## Troubleshooting
 
@@ -126,10 +130,17 @@ Connection: ws://100.x.x.x:8765 (Tailscale IP)
 
 ## Files
 
-- `main.js` - Obsidian plugin code
+- `main.js` - Obsidian plugin code (includes embedded relay server)
 - `manifest.json` - Plugin metadata
 - `styles.css` - Terminal styling
-- `relay_server.py` - WebSocket relay server (runs on Mac)
+
+## Development
+
+The relay server (`relay_server.py`) is embedded as base64 in `main.js` for Obsidian plugin directory compatibility. To rebuild after modifying:
+
+```bash
+./build.sh
+```
 
 ## Related
 
