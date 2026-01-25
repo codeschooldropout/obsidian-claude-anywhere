@@ -142,6 +142,14 @@ The relay server (`relay_server.py`) is embedded as base64 in `main.js` for Obsi
 ./build.sh
 ```
 
+## Contributing
+
+Issues and PRs welcome at [github.com/derek-larson14/obsidian-claude-anywhere](https://github.com/derek-larson14/obsidian-claude-anywhere)
+
+## License
+
+MIT
+
 ## Related
 
 - **[Claude Sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar)** - Run Claude Code in your Obsidian sidebar (desktop)
