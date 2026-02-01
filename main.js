@@ -6740,12 +6740,6 @@ var TerminalView = class extends import_obsidian.ItemView {
     this.sessionEnded = false;
     this.connectionLost = false;
     this.termHandlersSet = false;
-    // Scroll position manager state
-    this.lastStableScrollPos = 0;
-    this.scrollLockUntil = 0;
-    this.scrollRestoreTimeout = null;
-    this.lastScrollTime = 0;
-    this.wasAtBottom = true;
     // iOS keyboard handling
     this.visualViewportHandler = null;
     this.isiOS = false;
@@ -7275,53 +7269,9 @@ var TerminalView = class extends import_obsidian.ItemView {
     };
     // Capture phase to intercept before xterm's handlers
     this.termHost.addEventListener('paste', this.pasteDebounceHandler, true);
-    // Scroll position manager - prevents terminal jumping during Claude Code permission prompts
-    // Ink TUI redraws can cause unwanted jumps to top; this detects and restores position
-    this.term.onScroll((scrollPos) => {
-      const now = Date.now();
-      const maxScroll = this.term.buffer.active.baseY;
-      const isAtBottom = scrollPos >= maxScroll - 2;
-
-      // Update iOS scroll indicator (using DOM scroll position for accuracy)
+    // Update iOS scroll indicator on scroll
+    this.term.onScroll(() => {
       this.updateiOSScrollIndicator();
-
-      // During lock period, only allow scroll-to-bottom (following new output)
-      if (now < this.scrollLockUntil) {
-        if (isAtBottom) {
-          this.scrollLockUntil = 0;
-          if (this.scrollRestoreTimeout) {
-            clearTimeout(this.scrollRestoreTimeout);
-            this.scrollRestoreTimeout = null;
-          }
-          this.lastStableScrollPos = scrollPos;
-          this.wasAtBottom = true;
-        }
-        return;
-      }
-
-      // Detect suspicious jump: instant jump to 0 from scrolled-down position
-      const JUMP_THRESHOLD = 10;
-      if (scrollPos === 0 && this.lastStableScrollPos > JUMP_THRESHOLD) {
-        if (this.scrollRestoreTimeout) {
-          clearTimeout(this.scrollRestoreTimeout);
-        }
-        this.scrollLockUntil = now + 200;
-        const restorePos = this.lastStableScrollPos;
-        const shouldRestoreToBottom = this.wasAtBottom;
-        this.scrollRestoreTimeout = setTimeout(() => {
-          if (this.term) {
-            if (shouldRestoreToBottom) {
-              this.term.scrollToBottom();
-            } else {
-              this.term.scrollToLine(restorePos);
-            }
-          }
-          this.scrollRestoreTimeout = null;
-        }, 50);
-      } else if (scrollPos > 0) {
-        this.lastStableScrollPos = scrollPos;
-        this.wasAtBottom = isAtBottom;
-      }
     });
     this.term.attachCustomKeyEventHandler((ev) => {
       // Shift+Enter or Alt+Enter: send Alt+Enter for multi-line input
@@ -7469,6 +7419,8 @@ var TerminalView = class extends import_obsidian.ItemView {
     if (!this.term || !this.fitAddon) return;
     try {
       this.fitAddon.fit();
+      // Trust xterm's native scrollToBottom - it knows the correct position
+      this.term.scrollToBottom();
     } catch (e) {}
   }
   debouncedFit() {
@@ -7838,10 +7790,6 @@ var TerminalView = class extends import_obsidian.ItemView {
       clearTimeout(this.resizeTimeout);
       this.resizeTimeout = null;
     }
-    if (this.scrollRestoreTimeout) {
-      clearTimeout(this.scrollRestoreTimeout);
-      this.scrollRestoreTimeout = null;
-    }
     if (this.scrollIndicatorTimeout) {
       clearTimeout(this.scrollIndicatorTimeout);
       this.scrollIndicatorTimeout = null;
@@ -7877,19 +7825,21 @@ var ServerManager = {
     return require !== undefined && typeof require('child_process') !== 'undefined';
   },
 
-  // Get Tailscale IP (if connected)
+  // Get Tailscale IP (if connected) - async to avoid blocking plugin load
   async getTailscaleIP() {
     if (!this.isDesktop()) return null;
     try {
-      const { execSync } = require('child_process');
+      const { exec } = require('child_process');
+      const execAsync = (cmd) => new Promise((resolve, reject) => {
+        exec(cmd, { encoding: 'utf8', timeout: 3000, shell: '/bin/bash' }, (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout);
+        });
+      });
 
       // Method 1: Try tailscale ip -4 (most direct)
       try {
-        const output = execSync("/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || tailscale ip -4 2>/dev/null", {
-          encoding: 'utf8',
-          timeout: 5000,
-          shell: '/bin/bash'
-        });
+        const output = await execAsync("/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || tailscale ip -4 2>/dev/null");
         const ip = output.trim().split('\n')[0];
         if (ip && ip.startsWith('100.')) {
           return ip;
@@ -7900,11 +7850,7 @@ var ServerManager = {
 
       // Method 2: Parse network interfaces for Tailscale (utun) interface
       try {
-        const output = execSync("ifconfig | grep -A1 'utun' | grep 'inet 100\\.' | awk '{print $2}' | head -1", {
-          encoding: 'utf8',
-          timeout: 5000,
-          shell: '/bin/bash'
-        });
+        const output = await execAsync("ifconfig | grep -A1 'utun' | grep 'inet 100\\.' | awk '{print $2}' | head -1");
         const ip = output.trim();
         if (ip && ip.startsWith('100.')) {
           return ip;
@@ -8225,9 +8171,16 @@ var VaultTerminalPlugin = class extends import_obsidian.Plugin {
   }
 
   onunload() {
+    // Kill all terminal processes before unloading to prevent orphans
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+    for (const leaf of leaves) {
+      const view = leaf.view;
+      if (view instanceof TerminalView) {
+        view.stopShell();
+      }
+    }
     // Stop the relay server
     ServerManager.stop();
-    // Don't detach leaves - Obsidian manages leaf lifecycle during plugin updates
   }
   getVaultPath() {
     const adapter = this.app.vault.adapter;
