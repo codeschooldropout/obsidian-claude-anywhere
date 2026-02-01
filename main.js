@@ -7231,30 +7231,35 @@ var TerminalView = class extends import_obsidian.ItemView {
       this._viewportScrollHandler = () => this.updateiOSScrollIndicator();
       viewport.addEventListener('scroll', this._viewportScrollHandler, { passive: true });
     }
-    // Fix for Android GBoard voice dictation: clear stale textarea content
+    // Fix for Android GBoard voice dictation: clear textarea after each composition
     // Voice dictation accumulates text across multiple inputs (e.g., "hello" then "world" → "helloworld")
-    // But we must NOT clear for normal on-screen keyboard IME input (single characters)
+    // Solution: clear textarea after compositionend, with delay to let xterm process first
     // See: https://github.com/xtermjs/xterm.js/issues/3600
     const textarea = this.term.textarea;
     if (textarea) {
-      this.lastCompositionEnd = 0;
+      this.compositionClearTimeout = null;
 
       this.compositionEndHandler = () => {
-        this.lastCompositionEnd = Date.now();
+        // Clear any pending timeout
+        if (this.compositionClearTimeout) {
+          clearTimeout(this.compositionClearTimeout);
+        }
+        // Wait for xterm to process the input, then clear textarea
+        this.compositionClearTimeout = setTimeout(() => {
+          textarea.value = "";
+          this.compositionClearTimeout = null;
+        }, 100);
       };
       textarea.addEventListener('compositionend', this.compositionEndHandler);
 
       this.compositionStartHandler = () => {
-        // Only clear if there's stale content from a previous composition session
-        // Stale = content exists AND it's been >500ms since last compositionend
-        // This preserves normal IME typing (rapid compositions) while fixing voice dictation accumulation
-        const timeSinceLastEnd = Date.now() - this.lastCompositionEnd;
-        if (textarea.value.length > 0 && timeSinceLastEnd > 500) {
-          textarea.value = "";
+        // Cancel any pending clear - new composition starting
+        if (this.compositionClearTimeout) {
+          clearTimeout(this.compositionClearTimeout);
+          this.compositionClearTimeout = null;
         }
       };
-      // capture: true makes this run BEFORE xterm's compositionstart handler
-      textarea.addEventListener('compositionstart', this.compositionStartHandler, true);
+      textarea.addEventListener('compositionstart', this.compositionStartHandler);
     }
     // Debounce duplicate paste events (xterm.js can fire twice on external keyboards)
     this.lastPasteTime = 0;
@@ -7775,12 +7780,16 @@ var TerminalView = class extends import_obsidian.ItemView {
       this.pasteDebounceHandler = null;
     }
     if (this.compositionStartHandler) {
-      this.term?.textarea?.removeEventListener('compositionstart', this.compositionStartHandler, true);
+      this.term?.textarea?.removeEventListener('compositionstart', this.compositionStartHandler);
       this.compositionStartHandler = null;
     }
     if (this.compositionEndHandler) {
       this.term?.textarea?.removeEventListener('compositionend', this.compositionEndHandler);
       this.compositionEndHandler = null;
+    }
+    if (this.compositionClearTimeout) {
+      clearTimeout(this.compositionClearTimeout);
+      this.compositionClearTimeout = null;
     }
     if (this.fitTimeout) {
       clearTimeout(this.fitTimeout);
