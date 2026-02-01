@@ -19,7 +19,9 @@ Built by [Derek Larson](https://dtlarson.com) for [Delegate with Claude](https:/
 ## Requirements
 
 - Mac with [Claude Code](https://claude.ai/claude-code) installed
-- [Tailscale](https://tailscale.com/download) on both devices (same account)
+- Network connectivity between devices (one of):
+  - [Tailscale](https://tailscale.com/download) on both devices (same account) — simplest, no certs needed
+  - LAN / VPN with TLS certificates and DNS — see [TLS Setup](#tls-setup) below
 - File sync between Mac and mobile (Obsidian Sync, iCloud, Dropbox, etc.)
 - External keyboard recommended
 
@@ -105,12 +107,72 @@ Mobile                          Mac
 ┌─────────────────┐             ┌─────────────────┐
 │ Obsidian        │  Tailscale  │ Obsidian        │
 │ + Plugin        │◄───────────►│ + Plugin        │
-│ + xterm.js      │   (secure)  │ + relay_server  │
-│                 │             │ + Claude Code   │
+│ + xterm.js      │  or LAN/VPN │ + relay_server  │
+│                 │   (ws/wss)  │ + Claude Code   │
 └─────────────────┘             └─────────────────┘
 
-Connection: ws://100.x.x.x:8765 (Tailscale IP)
+Tailscale: ws://100.x.x.x:8765
+LAN + TLS: wss://mini.example.com:8765
 ```
+
+## TLS Setup
+
+If you're connecting over LAN or a VPN (not Tailscale), you need TLS certificates so the mobile browser allows the `wss://` connection.
+
+### What you need
+
+1. **A domain pointing to your Mac** — e.g., `mini.example.com` with an A record to its LAN IP
+2. **TLS certificates** — a valid cert/key pair for that domain (e.g., from Let's Encrypt)
+3. **Both devices on the same network** — LAN, or a VPN like WireGuard
+
+### Certificate setup (Let's Encrypt + Cloudflare DNS example)
+
+```bash
+# Install certbot with DNS plugin
+brew install pipx && pipx install certbot && pipx inject certbot certbot-dns-cloudflare
+
+# Create Cloudflare credentials
+mkdir -p ~/.secrets && cat > ~/.secrets/cloudflare.ini << 'EOF'
+dns_cloudflare_api_token = YOUR_TOKEN_HERE
+EOF
+chmod 600 ~/.secrets/cloudflare.ini
+
+# Get the cert
+sudo certbot certonly --dns-cloudflare \
+  --dns-cloudflare-credentials ~/.secrets/cloudflare.ini \
+  -d mini.example.com
+```
+
+The certs land in `/etc/letsencrypt/live/mini.example.com/`. Obsidian may not have permission to read from there, so copy them somewhere accessible:
+
+```bash
+cp /etc/letsencrypt/live/mini.example.com/fullchain.pem /etc/letsencrypt/live/mini.example.com/privkey.pem \
+  /path/to/vault/.obsidian/plugins/claude-anywhere/
+```
+
+Add a renewal hook so fresh certs get copied automatically:
+
+```bash
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/copy-to-plugin.sh << 'EOF'
+#!/bin/bash
+cp /etc/letsencrypt/live/mini.example.com/fullchain.pem \
+   /etc/letsencrypt/live/mini.example.com/privkey.pem \
+   /path/to/vault/.obsidian/plugins/claude-anywhere/
+chown YOUR_USER /path/to/vault/.obsidian/plugins/claude-anywhere/*.pem
+EOF
+sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/copy-to-plugin.sh
+```
+
+### Plugin settings
+
+In Obsidian on the Mac, go to Settings > Claude Anywhere:
+
+- **Host**: your domain (e.g., `mini.example.com`)
+- **Enable TLS**: on
+- **Certificate path**: full path to `fullchain.pem` (not `~`, use absolute path)
+- **Key path**: full path to `privkey.pem`
+
+The connection URL will be `wss://mini.example.com:8765`.
 
 ## Session Behavior
 

@@ -8,22 +8,27 @@ Run this on your Mac, connect from any device with the modified Obsidian plugin.
 No external dependencies - uses only Python standard library.
 """
 
+import argparse
 import asyncio
 import base64
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import pty
+import re
 import select
 import signal
+import ssl
 import struct
 import subprocess
 import termios
 from pathlib import Path
 
-# Configuration
-PORT = 8765
+# Token for auth validation (set from CLI args)
+EXPECTED_TOKEN = None
+AUTH_TIMEOUT_SECONDS = 5.0  # Max time for client to respond to auth challenge
 
 # Sync block markers - Claude Code wraps large updates in these
 # Stripping them prevents xterm.js from buffering massive atomic updates
@@ -84,6 +89,7 @@ class WebSocketConnection:
         # Parse headers
         headers = {}
         lines = request.decode('utf-8', errors='replace').split('\r\n')
+        request_line = lines[0] if lines else ""
         for line in lines[1:]:
             if ':' in line:
                 key, value = line.split(':', 1)
@@ -205,42 +211,44 @@ class WebSocketConnection:
                 pass
 
 
-def get_tailscale_ip():
-    """Auto-detect Tailscale IP if running."""
-    # Method 1: Try tailscale CLI (with full path for GUI apps)
-    tailscale_paths = [
-        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-        "/usr/local/bin/tailscale",
-        "tailscale"
-    ]
-    for ts_path in tailscale_paths:
-        try:
-            result = subprocess.run(
-                [ts_path, "ip", "-4"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                ip = result.stdout.strip().split('\n')[0]
-                if ip.startswith("100."):
-                    return ip
-        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-            continue
-
-    # Method 2: Parse network interfaces for Tailscale IP (utun interfaces)
+def get_lan_ip():
+    """Auto-detect a LAN IP address (private network)."""
     try:
+        # First try: Tailscale IP (100.x)
+        tailscale_paths = [
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",  # macOS GUI
+            "/usr/local/bin/tailscale",                               # Linux
+            "tailscale",                                              # Windows / PATH
+        ]
+        for ts_path in tailscale_paths:
+            try:
+                result = subprocess.run(
+                    [ts_path, "ip", "-4"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if result.returncode == 0:
+                    ts_ip = result.stdout.strip()
+                    if ts_ip and ts_ip.startswith('100.'):
+                        return ts_ip
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+        # Second try: Parse ifconfig for any private IP
         result = subprocess.run(
             ["ifconfig"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
-            # Look for 100.x.x.x addresses (Tailscale CGNAT range)
-            import re
-            matches = re.findall(r'inet (100\.\d+\.\d+\.\d+)', result.stdout)
-            if matches:
-                return matches[0]
+            # Match any private IP: 192.168.x.x, 10.x.x.x, 172.16-31.x.x, 100.x.x.x (CGNAT range)
+            matches = re.findall(r'inet (\d+\.\d+\.\d+\.\d+)', result.stdout)
+            for ip in matches:
+                if (ip.startswith('192.168.') or
+                    ip.startswith('10.') or
+                    ip.startswith('100.') or
+                    re.match(r'^172\.(1[6-9]|2[0-9]|3[01])\.', ip)):
+                    return ip
     except Exception:
         pass
-
     return None
 
 
@@ -445,6 +453,42 @@ async def handle_client(reader, writer):
     client_ip = websocket.remote_address[0]
     print(f"Client connected: {client_ip}", flush=True)
 
+    # HMAC challenge-response auth (only when a token is configured)
+    if EXPECTED_TOKEN:
+        async def reject_auth(reason):
+            print(f"Auth rejected: {client_ip} ({reason})", flush=True)
+            await websocket.send(json.dumps({
+                "type": "status",
+                "status": "auth_failed",
+                "message": "Authentication failed"
+            }))
+            await websocket.close()
+
+        nonce = os.urandom(32).hex()
+        await websocket.send(json.dumps({
+            "type": "auth_challenge",
+            "nonce": nonce
+        }))
+
+        try:
+            auth_msg = await asyncio.wait_for(websocket.recv(), timeout=AUTH_TIMEOUT_SECONDS)
+            msg = json.loads(auth_msg)
+            if msg.get("type") != "auth_response":
+                raise ValueError("Expected auth_response")
+
+            expected_hmac = hmac.new(
+                EXPECTED_TOKEN.encode(), nonce.encode(), hashlib.sha256
+            ).hexdigest()
+
+            if not hmac.compare_digest(msg.get("hmac", ""), expected_hmac):
+                await reject_auth("invalid HMAC")
+                return
+        except (asyncio.TimeoutError, json.JSONDecodeError, ValueError) as e:
+            await reject_auth(str(e))
+            return
+
+        print(f"Auth OK: {client_ip}", flush=True)
+
     # Each connection has its own session (not global)
     session = None
     cwd = None
@@ -523,20 +567,58 @@ async def handle_client(reader, writer):
 
 async def main():
     """Main entry point."""
+    global EXPECTED_TOKEN
+
+    parser = argparse.ArgumentParser(description="Claude Anywhere Relay Server")
+    parser.add_argument('--host', default=None, help='Bind address (default: auto-detect LAN IP, fallback 0.0.0.0)')
+    parser.add_argument('--port', type=int, default=8765, help='Port (default: 8765)')
+    parser.add_argument('--token', default=None, help='Auth token (if set, all connections must present it)')
+    parser.add_argument('--certfile', default=None, help='Path to TLS certificate (fullchain.pem)')
+    parser.add_argument('--keyfile', default=None, help='Path to TLS private key (privkey.pem)')
+    args = parser.parse_args()
+
+    EXPECTED_TOKEN = args.token
+
+    if EXPECTED_TOKEN:
+        try:
+            EXPECTED_TOKEN.encode('utf-8')
+        except UnicodeEncodeError:
+            print("ERROR: Token contains characters that cannot be UTF-8 encoded")
+            return
+
+    host = args.host
+    if not host:
+        host = get_lan_ip() or '0.0.0.0'
+
+    port = args.port
+    protocol = "ws"
+    ssl_ctx = None
+
+    if args.certfile and args.keyfile:
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            ssl_ctx.load_cert_chain(args.certfile, args.keyfile)
+        except FileNotFoundError as e:
+            print(f"ERROR: TLS certificate file not found: {e}")
+            print(f"  certfile: {args.certfile}")
+            print(f"  keyfile:  {args.keyfile}")
+            return
+        except ssl.SSLError as e:
+            print(f"ERROR: Failed to load TLS certificate: {e}")
+            return
+        protocol = "wss"
+
     print("Claude Anywhere Relay Server")
     print("=" * 40)
-
-    tailscale_ip = get_tailscale_ip()
-    if not tailscale_ip:
-        print("ERROR: Tailscale not connected!")
-        print("Please ensure Tailscale is running and connected.")
-        return
-
-    print(f"Tailscale IP: {tailscale_ip}")
-    print(f"Listening on ws://{tailscale_ip}:{PORT}")
+    print(f"Host: {host}")
+    print(f"Listening on {protocol}://{host}:{port}")
+    if EXPECTED_TOKEN:
+        print("Auth: token required")
+    if ssl_ctx:
+        print(f"TLS: enabled (cert: {args.certfile})")
     print()
 
-    server = await asyncio.start_server(handle_client, tailscale_ip, PORT)
+    server = await asyncio.start_server(handle_client, host, port, ssl=ssl_ctx)
     async with server:
         await server.serve_forever()
 
